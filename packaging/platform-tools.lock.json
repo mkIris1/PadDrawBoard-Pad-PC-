@@ -1,0 +1,8 @@
+{
+  "version": "36.0.2",
+  "archiveFileName": "platform-tools_r36.0.2-windows.zip",
+  "url": "https://dl.google.com/android/repository/platform-tools_r36.0.2-win.zip",
+  "sha256": "B024D4F319D6AD3004DE1BA7B96A5C7C5F3512E8B14126308D598B4AB93DCEAD",
+  "adbVersion": "36.0.2",
+  "publisher": "Google Android SDK Platform-Tools"
+}

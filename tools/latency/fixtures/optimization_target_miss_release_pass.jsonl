@@ -1,0 +1,12 @@
+{"kind":"clock_sync","device_send_ns":1000000000,"host_receive_ns":1003000000,"host_send_ns":1004000000,"device_receive_ns":1010000000}
+{"kind":"glass_sample","latency_ms":38.0}
+{"kind":"glass_sample","latency_ms":39.0}
+{"kind":"glass_sample","latency_ms":40.0}
+{"kind":"glass_sample","latency_ms":41.0}
+{"kind":"glass_sample","latency_ms":42.0}
+{"kind":"input_transport","latency_ms":4.0}
+{"kind":"input_transport","latency_ms":5.0}
+{"kind":"input_transport","latency_ms":6.0}
+{"kind":"soak","timestamp_s":0,"queue_depth":0,"active_pointer_ids":[],"crashes":0,"latency_ms":40.0}
+{"kind":"soak","timestamp_s":1800,"queue_depth":0,"active_pointer_ids":[1],"crashes":0,"latency_ms":40.5}
+{"kind":"soak","timestamp_s":3600,"queue_depth":0,"active_pointer_ids":[],"crashes":0,"latency_ms":40.2}

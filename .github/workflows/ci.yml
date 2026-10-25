@@ -1,0 +1,225 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_BUILD_TOOLS_VERSION: "35.0.0"
+
+jobs:
+  desktop-and-packaging:
+    name: Windows native tests and release packages
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure native build
+        run: cmake -S . -B build -A x64 -DPDB_BUILD_TESTS=ON
+
+      - name: Build native desktop target
+        run: cmake --build build --config Release --parallel
+
+      - name: Run native CTest
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Verify NSIS is available
+        shell: pwsh
+        run: |
+          $makensis = Get-Command makensis -ErrorAction SilentlyContinue
+          if (-not $makensis) {
+            throw 'makensis.exe is required by the release job. Install NSIS on the runner before packaging.'
+          }
+          & $makensis.Source /VERSION
+
+      - name: Build Windows ZIP and NSIS packages
+        shell: pwsh
+        run: >-
+          .\packaging\build-windows-packages.ps1
+          -SourceDirectory "${{ github.workspace }}"
+          -BuildDirectory "${{ github.workspace }}\.build-release-package"
+          -OutputDirectory "${{ github.workspace }}\artifacts\windows"
+          -Configuration Release
+          -Generator "Visual Studio 17 2022"
+
+      - name: Upload Windows portable and installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PadDrawBoard-windows-x64
+          path: artifacts/windows
+          if-no-files-found: error
+
+  protocol-python:
+    name: Protocol Python conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run protocol Python conformance
+        run: python -S protocol/tests/test_conformance.py
+
+  protocol-kotlin-jvm:
+    name: Protocol Kotlin/JVM tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Make checked-in Gradle wrapper executable
+        run: chmod +x android/gradlew
+      - name: Run protocol Kotlin/JVM tests
+        run: android/gradlew --no-daemon -p protocol/tests/jvm test
+
+  latency:
+    name: Latency tooling and fixture gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run latency unit tests
+        run: python -S -m unittest discover -s tools/latency -p 'test_*.py'
+      - name: Run passing latency gate fixture
+        run: |
+          mkdir -p artifacts
+          python -S tools/latency/latency_tool.py \
+            tools/latency/fixtures/latency.jsonl \
+            --mode all \
+            --output artifacts/latency-report.json
+      - name: Confirm failing soak fixture is rejected
+        shell: bash
+        run: |
+          set +e
+          python -S tools/latency/latency_tool.py \
+            tools/latency/fixtures/soak_failure.jsonl --mode soak
+          status=$?
+          set -e
+          test "$status" -eq 3
+
+  android:
+    name: Android tests and optional signed APK artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
+            "platform-tools"
+      - name: Make checked-in Gradle wrapper executable
+        run: chmod +x android/gradlew
+      - name: Run Android unit tests
+        run: android/gradlew --no-daemon -p android testDebugUnitTest
+      - name: Build, verify, and collect Android APK artifacts
+        env:
+          PDB_ANDROID_KEYSTORE_BASE64: ${{ secrets.PDB_ANDROID_KEYSTORE_BASE64 }}
+          PDB_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.PDB_ANDROID_KEYSTORE_PASSWORD }}
+          PDB_ANDROID_KEY_ALIAS: ${{ secrets.PDB_ANDROID_KEY_ALIAS }}
+          PDB_ANDROID_KEY_PASSWORD: ${{ secrets.PDB_ANDROID_KEY_PASSWORD }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signingValues = @(
+            $env:PDB_ANDROID_KEYSTORE_BASE64,
+            $env:PDB_ANDROID_KEYSTORE_PASSWORD,
+            $env:PDB_ANDROID_KEY_ALIAS,
+            $env:PDB_ANDROID_KEY_PASSWORD
+          )
+          $providedCount = @($signingValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+          if ($providedCount -ne 0 -and $providedCount -ne 4) {
+            throw 'Android signing secrets must be provided all together or not at all.'
+          }
+
+          $signingRoot = Join-Path $env:RUNNER_TEMP ("pdb-android-signing-{0}" -f $env:GITHUB_RUN_ID)
+          $expectedSigning = 'Unsigned'
+          try {
+            if ($providedCount -eq 4) {
+              New-Item -ItemType Directory -Force -Path $signingRoot | Out-Null
+              $keystorePath = Join-Path $signingRoot 'release.keystore'
+              try {
+                $keystoreBytes = [Convert]::FromBase64String($env:PDB_ANDROID_KEYSTORE_BASE64)
+              } catch {
+                throw 'PDB_ANDROID_KEYSTORE_BASE64 is not valid base64.'
+              }
+              [System.IO.File]::WriteAllBytes($keystorePath, $keystoreBytes)
+              $env:PDB_ANDROID_KEYSTORE_FILE = $keystorePath
+              $expectedSigning = 'Signed'
+            }
+
+            $env:PDB_ANDROID_SIGNING_MODE = $expectedSigning
+            & android/gradlew --no-daemon -p android assembleDebug assembleRelease
+            if ($LASTEXITCODE -ne 0) { throw 'Gradle Android assembly failed.' }
+
+            if ($expectedSigning -eq 'Signed') {
+              $buildTools = Join-Path $env:ANDROID_HOME ("build-tools/{0}" -f $env:ANDROID_BUILD_TOOLS_VERSION)
+              $apksigner = Join-Path $buildTools 'apksigner'
+              if (-not (Test-Path -LiteralPath $apksigner)) {
+                $apksigner = Join-Path $buildTools 'apksigner.bat'
+              }
+              if (-not (Test-Path -LiteralPath $apksigner -PathType Leaf)) {
+                throw "Android SDK apksigner was not found under $buildTools."
+              }
+              $signedApk = Join-Path $env:GITHUB_WORKSPACE 'android/app/build/outputs/apk/release/app-release.apk'
+              & $apksigner verify --verbose $signedApk | Out-Host
+              if ($LASTEXITCODE -ne 0) { throw 'apksigner rejected the signed release APK.' }
+
+              $aapt = Join-Path $buildTools 'aapt'
+              if (-not (Test-Path -LiteralPath $aapt)) { $aapt = Join-Path $buildTools 'aapt.exe' }
+              $badging = & $aapt dump badging $signedApk
+              if ($LASTEXITCODE -ne 0 -or -not ($badging -match "package: name='io\.paddrawboard\.client'")) {
+                throw 'Signed release APK package id is not io.paddrawboard.client.'
+              }
+            }
+
+            & pwsh -NoProfile -File packaging/collect-android-artifacts.ps1 `
+              -AndroidDirectory "${{ github.workspace }}/android" `
+              -OutputDirectory "${{ github.workspace }}/artifacts/android" `
+              -Version 0.1.0 `
+              -ExpectedReleaseSigning $expectedSigning
+            if ($LASTEXITCODE -ne 0) { throw 'Android artifact collection failed.' }
+            & pwsh -NoProfile -File packaging/generate-checksums.ps1 `
+              -InputDirectory "${{ github.workspace }}/artifacts/android" `
+              -OutputFile "${{ github.workspace }}/artifacts/android/SHA256SUMS.txt" `
+              -JsonOutputFile "${{ github.workspace }}/artifacts/android/SHA256SUMS.json"
+            if ($LASTEXITCODE -ne 0) { throw 'Android checksum generation failed.' }
+            "PDB_ANDROID_ARTIFACT_KIND=$($expectedSigning.ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          } finally {
+            if (Test-Path -LiteralPath $signingRoot) {
+              Remove-Item -LiteralPath $signingRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PadDrawBoard-android-${{ env.PDB_ANDROID_ARTIFACT_KIND }}
+          path: artifacts/android
+          if-no-files-found: error
+      - name: Remove signing workspace
+        if: always()
+        shell: pwsh
+        run: |
+          $signingRoot = Join-Path $env:RUNNER_TEMP ("pdb-android-signing-{0}" -f $env:GITHUB_RUN_ID)
+          if (Test-Path -LiteralPath $signingRoot) {
+            Remove-Item -LiteralPath $signingRoot -Recurse -Force -ErrorAction SilentlyContinue
+          }

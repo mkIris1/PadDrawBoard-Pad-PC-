@@ -1,0 +1,53 @@
+# Build outputs
+/build/
+/out/
+/.build-*/
+/.build*/
+/**/.build/
+/**/build/
+/.gradle/
+/.gradle-user/
+/android/.gradle/
+/android/.kotlin/
+/android/app/build/
+/desktop/build/
+/protocol/tests/jvm/build/
+
+# Local tooling and IDEs
+/.idea/
+/.vs/
+/.vscode/
+*.user
+*.suo
+
+# Signing and local configuration
+*.jks
+*.keystore
+*.p12
+*.pfx
+local.properties
+signing.properties
+/android-signing/
+/cert_backup/
+
+# Runtime artifacts
+*.log
+*.dmp
+__pycache__/
+*.py[cod]
+/artifacts/
+
+# Packaging workspaces and downloaded release inputs.  Platform Tools and
+# release binaries are acquired at build time and must never be committed.
+/packaging/.cache/
+/packaging/.work/
+/packaging/dist/
+/packaging/downloads/
+/platform-tools-*/
+*.apk
+*.msi
+*.zip
+
+# Local backup files
+*.orig
+*.bak
