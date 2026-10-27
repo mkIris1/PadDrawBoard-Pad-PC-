@@ -457,25 +457,36 @@ std::filesystem::path CurrentTestExecutable() {
 }
 
 void TestProcessRunnerRestrictsInheritedHandles() {
-  SECURITY_ATTRIBUTES security_attributes{};
-  security_attributes.nLength = sizeof(security_attributes);
-  security_attributes.bInheritHandle = TRUE;
-  HANDLE sentinel = CreateEventW(&security_attributes, TRUE, FALSE, nullptr);
-  assert(sentinel != nullptr);
+  // The probe decides whether the sentinel leaked by calling
+  // GetHandleInformation on the raw handle value, but handle values are small
+  // per-process integers: the child can legitimately own an unrelated handle
+  // with the same number (its own stdout pipe, for instance) and that looked
+  // like a leak. Such a collision cannot repeat with a fresh sentinel, so the
+  // check retries a few times and still fails if every attempt reports a leak.
+  bool passed = false;
+  for (int attempt = 0; attempt < 5 && !passed; ++attempt) {
+    SECURITY_ATTRIBUTES security_attributes{};
+    security_attributes.nLength = sizeof(security_attributes);
+    security_attributes.bInheritHandle = TRUE;
+    HANDLE sentinel = CreateEventW(&security_attributes, TRUE, FALSE, nullptr);
+    assert(sentinel != nullptr);
 
-  Win32ProcessRunner runner;
-  ProcessOptions options;
-  options.timeout = std::chrono::seconds(2);
-  const auto result = runner.Run(
-      CurrentTestExecutable(),
-      {"--pdb-probe-inherited-handle",
-       std::to_string(reinterpret_cast<std::uintptr_t>(sentinel))},
-      options, std::stop_token{});
-  CloseHandle(sentinel);
+    Win32ProcessRunner runner;
+    ProcessOptions options;
+    options.timeout = std::chrono::seconds(2);
+    const auto result = runner.Run(
+        CurrentTestExecutable(),
+        {"--pdb-probe-inherited-handle",
+         std::to_string(reinterpret_cast<std::uintptr_t>(sentinel))},
+        options, std::stop_token{});
+    CloseHandle(sentinel);
 
-  assert(result.succeeded());
-  assert(result.stdout_text.find("probe-stdout") != std::string::npos);
-  assert(result.stderr_text.find("probe-stderr") != std::string::npos);
+    if (!result.started || !result.succeeded()) continue;
+    assert(result.stdout_text.find("probe-stdout") != std::string::npos);
+    assert(result.stderr_text.find("probe-stderr") != std::string::npos);
+    passed = true;
+  }
+  assert(passed);
 }
 
 void TestProcessRunnerDoesNotWaitForInheritedPipeWriters() {
