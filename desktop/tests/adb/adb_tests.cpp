@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -457,36 +458,45 @@ std::filesystem::path CurrentTestExecutable() {
 }
 
 void TestProcessRunnerRestrictsInheritedHandles() {
-  // The probe decides whether the sentinel leaked by calling
-  // GetHandleInformation on the raw handle value, but handle values are small
-  // per-process integers: the child can legitimately own an unrelated handle
-  // with the same number (its own stdout pipe, for instance) and that looked
-  // like a leak. Such a collision cannot repeat with a fresh sentinel, so the
-  // check retries a few times and still fails if every attempt reports a leak.
-  bool passed = false;
-  for (int attempt = 0; attempt < 5 && !passed; ++attempt) {
-    SECURITY_ATTRIBUTES security_attributes{};
-    security_attributes.nLength = sizeof(security_attributes);
-    security_attributes.bInheritHandle = TRUE;
-    HANDLE sentinel = CreateEventW(&security_attributes, TRUE, FALSE, nullptr);
-    assert(sentinel != nullptr);
+  // The sentinel is a named event and the child compares the inherited handle
+  // against that object. Testing the bare handle value is not enough: handle
+  // values are small per-process integers, so an unrelated handle in the child
+  // (its own stdout pipe, for example) can carry the same number and look like
+  // a leak. Object identity removes that ambiguity.
+  SECURITY_ATTRIBUTES security_attributes{};
+  security_attributes.nLength = sizeof(security_attributes);
+  security_attributes.bInheritHandle = TRUE;
+  wchar_t sentinel_name[128]{};
+  (void)swprintf_s(sentinel_name, L"Local\\PadDrawBoardProbe-%lu",
+                   static_cast<unsigned long>(GetCurrentProcessId()));
+  HANDLE sentinel = CreateEventW(&security_attributes, TRUE, FALSE, sentinel_name);
+  assert(sentinel != nullptr);
+  char narrow_name[160]{};
+  const int narrow_length = WideCharToMultiByte(CP_UTF8, 0, sentinel_name, -1,
+                                                narrow_name, sizeof(narrow_name),
+                                                nullptr, nullptr);
+  assert(narrow_length > 1);
 
-    Win32ProcessRunner runner;
-    ProcessOptions options;
-    options.timeout = std::chrono::seconds(2);
-    const auto result = runner.Run(
-        CurrentTestExecutable(),
-        {"--pdb-probe-inherited-handle",
-         std::to_string(reinterpret_cast<std::uintptr_t>(sentinel))},
-        options, std::stop_token{});
-    CloseHandle(sentinel);
+  Win32ProcessRunner runner;
+  ProcessOptions options;
+  options.timeout = std::chrono::seconds(2);
+  const auto result = runner.Run(
+      CurrentTestExecutable(),
+      {"--pdb-probe-inherited-handle",
+       std::to_string(reinterpret_cast<std::uintptr_t>(sentinel)), narrow_name},
+      options, std::stop_token{});
+  CloseHandle(sentinel);
 
-    if (!result.started || !result.succeeded()) continue;
-    assert(result.stdout_text.find("probe-stdout") != std::string::npos);
-    assert(result.stderr_text.find("probe-stderr") != std::string::npos);
-    passed = true;
+  if (!result.succeeded()) {
+    std::cerr << "probe failed: started=" << result.started
+              << " timed_out=" << result.timed_out
+              << " exit=" << result.exit_code << " stdout=[" << result.stdout_text
+              << "] stderr=[" << result.stderr_text << "]\n";
   }
-  assert(passed);
+  assert(result.started);
+  assert(result.succeeded());
+  assert(result.stdout_text.find("probe-stdout") != std::string::npos);
+  assert(result.stderr_text.find("probe-stderr") != std::string::npos);
 }
 
 void TestProcessRunnerDoesNotWaitForInheritedPipeWriters() {
@@ -520,12 +530,32 @@ void TestProcessRunnerDoesNotWaitForInheritedPipeWriters() {
 
 int main(int argc, char** argv) {
 #ifdef _WIN32
-  if (argc == 3 && std::strcmp(argv[1], "--pdb-probe-inherited-handle") == 0) {
+  if (argc == 4 && std::strcmp(argv[1], "--pdb-probe-inherited-handle") == 0) {
     const auto raw_handle = std::stoull(argv[2]);
     const HANDLE candidate = reinterpret_cast<HANDLE>(
         static_cast<std::uintptr_t>(raw_handle));
-    DWORD handle_flags = 0;
-    const bool inherited = GetHandleInformation(candidate, &handle_flags) != FALSE;
+    // Ask whether `candidate` refers to the parent's sentinel object instead of
+    // merely being a valid handle number: number reuse across processes made the
+    // old check report false leaks.
+    wchar_t wide_name[160]{};
+    const int wide_length = MultiByteToWideChar(CP_UTF8, 0, argv[3], -1, wide_name,
+                                                static_cast<int>(std::size(wide_name)));
+    bool inherited = false;
+    if (wide_length > 1) {
+      const HANDLE expected = OpenEventW(SYNCHRONIZE, FALSE, wide_name);
+      if (expected != nullptr) {
+        // Resolved at run time: the import library this test target links does
+        // not export CompareObjectHandles even though Windows 10+ provides it.
+        using CompareHandlesFn = BOOL(WINAPI*)(HANDLE, HANDLE);
+        static const auto compare_handles = reinterpret_cast<CompareHandlesFn>(
+            ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"),
+                             "CompareObjectHandles"));
+        if (compare_handles != nullptr) {
+          inherited = compare_handles(candidate, expected) != FALSE;
+        }
+        CloseHandle(expected);
+      }
+    }
     std::cout << "probe-stdout\n";
     std::cerr << "probe-stderr\n";
     return inherited ? 1 : 0;
