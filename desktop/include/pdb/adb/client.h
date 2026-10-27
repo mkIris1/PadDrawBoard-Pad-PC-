@@ -18,8 +18,10 @@ struct AdbCommandOptions {
 
 class AdbClient {
  public:
+  // `use_host_query` lets unit tests keep the client hermetic: it skips the
+  // direct adb-server query and always goes through the injected process runner.
   AdbClient(std::filesystem::path executable, IProcessRunner& runner,
-            AdbCommandOptions options = {});
+            AdbCommandOptions options = {}, bool use_host_query = true);
 
   [[nodiscard]] const std::filesystem::path& executable() const noexcept {
     return executable_;
@@ -90,6 +92,7 @@ class AdbClient {
  private:
   std::filesystem::path executable_;
   IProcessRunner& runner_;
+  bool use_host_query_{true};
   AdbCommandOptions options_;
 };
 
@@ -111,6 +114,7 @@ class AdbLocator {
 
  private:
   IProcessRunner& runner_;
+  bool use_host_query_{true};
 };
 
 }  // namespace pdb::adb

@@ -1,4 +1,5 @@
-﻿#include "pdb/adb/client.h"
+#include "pdb/adb/client.h"
+#include "pdb/adb/host_query.h"
 
 #include <algorithm>
 #include <cctype>
@@ -128,8 +129,11 @@ std::optional<SessionToken> ParseSessionTokenHex(std::string_view value) {
 }
 
 AdbClient::AdbClient(std::filesystem::path executable, IProcessRunner& runner,
-                     AdbCommandOptions options)
-    : executable_(std::move(executable)), runner_(runner), options_(options) {}
+                     AdbCommandOptions options, bool use_host_query)
+    : executable_(std::move(executable)),
+      runner_(runner),
+      options_(options),
+      use_host_query_(use_host_query) {}
 
 ProcessResult AdbClient::Run(const std::vector<std::string>& arguments,
                              std::stop_token stop_token,
@@ -143,6 +147,15 @@ ProcessResult AdbClient::Version(std::stop_token stop_token) const {
 }
 
 DeviceListing AdbClient::ListDevices(std::stop_token stop_token) const {
+  // Query the running adb server directly when possible: the device probe runs
+  // continuously while waiting for a tablet, and one adb.exe spawn per poll was
+  // the largest idle cost of this process. Spawning stays as the fallback so a
+  // cold start (no server yet) still works and still starts the server.
+  if (use_host_query_) {
+    if (const std::optional<std::string> fast = QueryAdbHostDevices(stop_token)) {
+      return ParseDevicesOutput(*fast);
+    }
+  }
   const ProcessResult process = Run(BuildListDevicesArguments(), stop_token);
   if (!process.started || !process.succeeded()) {
     DeviceListing listing;

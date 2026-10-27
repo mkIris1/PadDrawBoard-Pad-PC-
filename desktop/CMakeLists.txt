@@ -44,6 +44,7 @@ pdb_target_defaults(pdb_video)
 add_library(pdb_adb STATIC
   src/adb/backoff.cpp
   src/adb/client.cpp
+  src/adb/host_query.cpp
   src/adb/input_probe.cpp
   src/adb/loopback.cpp
   src/adb/process.cpp

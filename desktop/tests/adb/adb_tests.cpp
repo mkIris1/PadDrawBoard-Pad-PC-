@@ -322,7 +322,7 @@ void TestProbeAndSession() {
       "add device 1: /dev/input/event4\n"
       " ABS_PRESSURE ABS_DISTANCE ABS_TILT_X ABS_TILT_Y\n"
       " BTN_TOUCH BTN_STYLUS BTN_STYLUS2 BTN_STYLUS3\n";
-  AdbClient client("adb.exe", runner);
+  AdbClient client("adb.exe", runner, {}, false);
   const InputProbeResult probe = InputProbe(client).Probe("ABC");
   assert(probe.command_succeeded);
   assert(probe.capabilities.all_buttons_observable());
@@ -390,7 +390,7 @@ void TestSessionAuthenticationDuringLaunchAndRevocation() {
   FakeRunner runner;
   runner.devices_output = "List of devices attached\nABC\tdevice\n";
   runner.block_launch = true;
-  AdbClient client("adb.exe", runner);
+  AdbClient client("adb.exe", runner, {}, false);
 
   AdbSession session(client, clock);
   bool start_result = false;
@@ -411,7 +411,7 @@ void TestSessionAuthenticationDuringLaunchAndRevocation() {
   failed_runner.devices_output = "List of devices attached\nABC\tdevice\n";
   failed_runner.block_launch = true;
   failed_runner.fail_launch = true;
-  AdbClient failed_client("adb.exe", failed_runner);
+  AdbClient failed_client("adb.exe", failed_runner, {}, false);
   AdbSession failed_session(failed_client, clock);
   bool failed_start_result = true;
   std::thread failed_starter([&] {
