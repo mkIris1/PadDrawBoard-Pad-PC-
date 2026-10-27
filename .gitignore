@@ -51,3 +51,6 @@ __pycache__/
 # Local backup files
 *.orig
 *.bak
+
+# Editor/patch backups
+*.pdb_backup
